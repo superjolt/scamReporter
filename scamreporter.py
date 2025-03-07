@@ -6,21 +6,27 @@ import re
 import os
 from dotenv import load_dotenv
 
-
+# Load environment variables from .env file
 load_dotenv()
 
+# Retrieve environment variables
 VT_API_KEY = os.getenv("VT_API_KEY")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID"))
 
-bot = commands.Bot(command_prefix='/')
+# Set up intents
+intents = discord.Intents.default()  # Includes guilds, which is needed for channel access
+intents.message_content = True       
+
+# Initialize the bot with the prefix and intents
+bot = commands.Bot(command_prefix='/', intents=intents)
 
 @bot.event
 async def on_ready():
     print(f'{bot.user}? IT\'S ALIVE!')
 
 def get_vt_report(url):
-    """gets the reeport, i dont even know how this works :sob:"""
+    """Gets the report from VirusTotal, I don’t even know how this works :sob:"""
     url_bytes = url.encode('ascii')
     base64_bytes = base64.urlsafe_b64encode(url_bytes)
     base64_url = base64_bytes.decode('ascii').rstrip('=')
@@ -33,21 +39,18 @@ def get_vt_report(url):
     else:
         response.raise_for_status()
 
-
 @bot.command()
 async def report(ctx, *, args):
     """
-    reports scam links to like different shit like cloudfare
+    Reports scam links to a designated channel.
     
     Format: /report url: <url> provider: <provider> reason: <reason>
     Example: /report url: probablynotgoogle.com provider: cloudfare reason: Phishing
     """
-
     url_match = re.search(r'url:\s*(\S+)', args)
     provider_match = re.search(r'provider:\s*(\S+)', args)
     reason_match = re.search(r'reason:\s*(.+)', args)
     
-
     if url_match and provider_match and reason_match:
         url = url_match.group(1)
         provider = provider_match.group(1)
@@ -56,22 +59,19 @@ async def report(ctx, *, args):
         await ctx.send("Invalid format. Use: `/report url: <url> provider: <provider> reason: <reason>`")
         return
     
-
     reports_channel = bot.get_channel(REPORTS_CHANNEL_ID)
     if reports_channel is None:
         await ctx.send("Reports channel not found. Please contact the administrator.")
         return
     
-
     report_message = f"New report:\n**URL**: {url}\n**Provider**: {provider}\n**Reason**: {reason}"
     await reports_channel.send(report_message)
     await ctx.send("Report submitted successfully.")
 
-
 @bot.command()
 async def check(ctx, *, url: str):
     """
-    basically checks a link using virus totals api
+    Checks a link using VirusTotal's API.
     Format: /check <url>
     Example: /check http://example.com
     """
@@ -107,4 +107,5 @@ async def check(ctx, *, url: str):
     except requests.RequestException as e:
         await ctx.send(f"Error accessing VirusTotal API: {str(e)}")
 
+# Run the bot
 bot.run(DISCORD_BOT_TOKEN)
