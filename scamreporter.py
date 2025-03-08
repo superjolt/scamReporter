@@ -1,111 +1,95 @@
 import discord
 from discord.ext import commands
-import requests
-import base64
-import re
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Retrieve environment variables
-VT_API_KEY = os.getenv("VT_API_KEY")
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID"))
-
 # Set up intents
-intents = discord.Intents.default()  # Includes guilds, which is needed for channel access
-intents.message_content = True       
+intents = discord.Intents.default()
+intents.message_content = True  # Required for reading message content
 
-# Initialize the bot with the prefix and intents
-bot = commands.Bot(command_prefix='/', intents=intents)
+# Initialize the bot
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user}? IT\'S ALIVE!')
+    print(f"Bot is online as {bot.user}")
 
-def get_vt_report(url):
-    """Gets the report from VirusTotal, I don’t even know how this works :sob:"""
-    url_bytes = url.encode('ascii')
-    base64_bytes = base64.urlsafe_b64encode(url_bytes)
-    base64_url = base64_bytes.decode('ascii').rstrip('=')
-    headers = {"x-apikey": VT_API_KEY}
-    response = requests.get(f"https://www.virustotal.com/api/v3/urls/{base64_url}", headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    elif response.status_code == 404:
-        return None
-    else:
-        response.raise_for_status()
+# Function: Get VirusTotal report for a URL
+async def get_virustotal_report(url):
+    api_key = os.getenv("VIRUSTOTAL_API_KEY")
+    params = {'apikey': api_key, 'resource': url, 'scan': 1}
+    async with aiohttp.ClientSession() as session:
+        # Initial request to get report or submit for scanning
+        async with session.get("https://www.virustotal.com/vtapi/v2/url/report", params=params) as response:
+            data = await response.json()
+            if data['response_code'] == 1:
+                return data
+            elif data['response_code'] == 0:
+                # URL submitted for scanning; poll until report is ready
+                for _ in range(5):
+                    await asyncio.sleep(15)
+                    async with session.get("https://www.virustotal.com/vtapi/v2/url/report", params={'apikey': api_key, 'resource': url}) as retry_response:
+                        retry_data = await retry_response.json()
+                        if retry_data['response_code'] == 1:
+                            return retry_data
+                return {"error": "Scan took too long, please try again later."}
+            else:
+                return {"error": "Error in VirusTotal API response."}
 
+# Command: /report url:<url> provider:<provider> reason:<reason>
 @bot.command()
-async def report(ctx, *, args):
-    """
-    Reports scam links to a designated channel.
-    
-    Format: /report url: <url> provider: <provider> reason: <reason>
-    Example: /report url: probablynotgoogle.com provider: cloudfare reason: Phishing
-    """
-    url_match = re.search(r'url:\s*(\S+)', args)
-    provider_match = re.search(r'provider:\s*(\S+)', args)
-    reason_match = re.search(r'reason:\s*(.+)', args)
-    
-    if url_match and provider_match and reason_match:
-        url = url_match.group(1)
-        provider = provider_match.group(1)
-        reason = reason_match.group(1).strip()
-    else:
-        await ctx.send("Invalid format. Use: `/report url: <url> provider: <provider> reason: <reason>`")
-        return
-    
-    reports_channel = bot.get_channel(REPORTS_CHANNEL_ID)
-    if reports_channel is None:
-        await ctx.send("Reports channel not found. Please contact the administrator.")
-        return
-    
-    report_message = f"New report:\n**URL**: {url}\n**Provider**: {provider}\n**Reason**: {reason}"
-    await reports_channel.send(report_message)
-    await ctx.send("Report submitted successfully.")
-
-@bot.command()
-async def check(ctx, *, url: str):
-    """
-    Checks a link using VirusTotal's API.
-    Format: /check <url>
-    Example: /check http://example.com
-    """
-    url = url.strip()
+async def report(ctx, *, args: str):
+    args_list = args.split()
     try:
-        report = get_vt_report(url)
-        if report is None:
-            await ctx.send(f"No scan report available for `{url}` in VirusTotal's database.")
-        else:
-            stats = report['data']['attributes']['last_analysis_stats']
-            malicious = stats.get('malicious', 0)
-            suspicious = stats.get('suspicious', 0)
-            harmless = stats.get('harmless', 0)
-            undetected = stats.get('undetected', 0)
-            total = malicious + suspicious + harmless + undetected
-            
-            message = f"**VirusTotal Scan Results for `{url}`**:\n"
-            message += f"Scanned by {total} engines:\n"
-            message += f"- Malicious: {malicious}\n"
-            message += f"- Suspicious: {suspicious}\n"
-            message += f"- Harmless: {harmless}\n"
-            message += f"- Undetected: {undetected}\n"
-            
-            if malicious > 0:
-                results = report['data']['attributes']['last_analysis_results']
-                malicious_engines = [
-                    engine for engine, result in results.items()
-                    if result['category'] == 'malicious'
-                ]
-                message += "**Detected as malicious by**: " + ', '.join(malicious_engines)
-            
-            await ctx.send(message)
-    except requests.RequestException as e:
-        await ctx.send(f"Error accessing VirusTotal API: {str(e)}")
+        # Find indices of labels
+        url_index = args_list.index("url:")
+        provider_index = args_list.index("provider:")
+        reason_index = args_list.index("reason:")
+        # Ensure labels are in correct order and have values
+        if url_index >= provider_index or provider_index >= reason_index:
+            raise ValueError
+        url = " ".join(args_list[url_index + 1:provider_index])
+        provider = " ".join(args_list[provider_index + 1:reason_index])
+        reason = " ".join(args_list[reason_index + 1:])
+        if not url or not provider or not reason:
+            raise ValueError
+    except ValueError:
+        await ctx.send("Invalid format. Please use /report url:<url> provider:<provider> reason:<reason>")
+        return
 
-# Run the bot
-bot.run(DISCORD_BOT_TOKEN)
+    # Get report channel and send report
+    report_channel_id = int(os.getenv("REPORT_CHANNEL_ID"))
+    report_channel = bot.get_channel(report_channel_id)
+    if report_channel is None:
+        await ctx.send("Report channel not found. Please check the configuration.")
+        return
+    await report_channel.send(f"New report:\nURL: {url}\nProvider: {provider}\nReason: {reason}\nReported by: {ctx.author.mention}")
+    await ctx.send("Your report has been logged.")
+
+# Command: /check <url>
+@bot.command()
+async def check(ctx, url: str):
+    # Basic URL validation
+    if not url.startswith("http://") and not url.startswith("https://"):
+        await ctx.send("Please provide a valid URL starting with http:// or https://")
+        return
+    
+    await ctx.send("Checking URL with VirusTotal, please wait...")
+    report = await get_virustotal_report(url)
+    
+    # Handle report results or errors
+    if "error" in report:
+        await ctx.send(report["error"])
+    else:
+        positives = report["positives"]
+        total = report["total"]
+        if positives > 0:
+            await ctx.send(f"The URL is detected as malicious by {positives} out of {total} engines.")
+        else:
+            await ctx.send(f"The URL is clean according to {total} engines.")
+
+# Run the bot with the Discord token
+bot.run(os.getenv("DISCORD_TOKEN"))
